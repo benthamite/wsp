@@ -1,0 +1,427 @@
+\input texinfo    @c -*- texinfo -*-
+@c %**start of header
+@setfilename wsp.info
+@settitle wsp: WhatsApp client for Emacs
+@documentencoding UTF-8
+@documentlanguage en
+@c %**end of header
+
+@dircategory Emacs misc features
+@direntry
+* wsp: (wsp).           WhatsApp client for Emacs on wa-archive.
+@end direntry
+
+@finalout
+@titlepage
+@title wsp: WhatsApp client for Emacs
+@author Pablo Stafforini (@email{pablo@@stafforini.com})
+@end titlepage
+
+@contents
+
+@ifnottex
+@node Top
+@top wsp: WhatsApp client for Emacs
+
+This manual describes the features and customization options for @samp{wsp}.
+
+@end ifnottex
+
+@menu
+* Overview::
+* User options::
+* Faces::
+* Variables and keymaps::
+* Commands::
+* Functions::
+* Indices::
+
+@detailmenu
+--- The Detailed Node Listing ---
+
+User options
+
+* Where wa-archive keeps its files::
+* Connection and refresh::
+* Chat display::
+* Attachments: Attachments (1). 
+* Read receipts@comma{} typing and online status: Read receipts typing and online status. 
+* Notifications and drafts::
+
+Commands
+
+* The chat list::
+* Reading a chat::
+* Sending and acting on messages::
+* Attachments::
+* Searching::
+* Opening a chat at a message::
+* Read state@comma{} notifications and the indicator: Read state notifications and the indicator. 
+* The daemon's health::
+
+Sending and acting on messages
+
+* What happens when you send::
+
+Functions
+
+* Opening a message from another package::
+* Building blocks::
+
+Indices
+
+* Function index::
+* Variable index::
+
+@end detailmenu
+@end menu
+
+@node Overview
+@chapter Overview
+
+@samp{wsp} is a WhatsApp client for Emacs: you read your chats@comma{} reply@comma{} react@comma{} edit@comma{} delete@comma{} send files@comma{} search and get notified@comma{} as on the phone.
+
+@samp{wsp} has no WhatsApp connection of its own.  @uref{https://github.com/benthamite/wa-archive, wa-archive}@comma{} a daemon built on the whatsmeow library and linked to your phone as a companion device@comma{} holds the connection and keeps every message in an SQLite store.  @samp{wsp} reads that store directly@comma{} read-only@comma{} and does everything that acts on WhatsApp through wa-archive's local API@comma{} a Unix socket.  This is the arrangement sgn has with signal-cli: the daemon is the backend and @samp{wsp} the client.  Because the store holds the whole history@comma{} a chat shows as much of it as you load@comma{} and any message can be opened by its id@comma{} which lets other programs link to a message.
+
+The parts:
+
+@itemize
+@item
+reading: the chat list (@ref{The chat list, , The chat list})@comma{} chat buffers (@ref{Reading a chat, , Reading a chat}) and attachments (@ref{Attachments, , Attachments});
+@item
+writing: sending@comma{} replying@comma{} editing@comma{} deleting and reacting (@ref{Sending and acting on messages, , Sending and acting on messages});
+@item
+finding: search (@ref{Searching, , Searching}) and opening a chat at a given message (@ref{Opening a chat at a message, , Opening a chat at a message});
+@item
+staying current: read state@comma{} notifications and the unread indicator (@ref{Read state notifications and the indicator, , Read state@comma{} notifications and the indicator}).
+@end itemize
+
+@strong{Prerequisites}: Emacs 31.1 or later with SQLite support (@samp{wsp} opens the store with @code{sqlite-open}'s read-only argument@comma{} new in 31.1)@comma{} and @uref{https://github.com/benthamite/wa-archive, wa-archive} running and linked to your phone (its README explains how).  Without the daemon's socket@comma{} @samp{wsp} still shows the store but cannot act.
+
+@node User options
+@chapter User options
+
+@menu
+* Where wa-archive keeps its files::
+* Connection and refresh::
+* Chat display::
+* Attachments: Attachments (1). 
+* Read receipts@comma{} typing and online status: Read receipts typing and online status. 
+* Notifications and drafts::
+@end menu
+
+@node Where wa-archive keeps its files
+@section Where wa-archive keeps its files
+
+@vindex wsp-data-directory
+@vindex wsp-state-directory
+@vindex wsp-api-socket
+The user option @code{wsp-data-directory} is wa-archive's data directory@comma{} which holds the store @samp{messages.db}@comma{} the downloaded attachments under @samp{media/} and the API socket.  Its default is @samp{wa-archive} under @samp{$XDG_DATA_HOME}@comma{} or under @samp{~/.local/share} when that variable is unset@comma{} which is where wa-archive puts it.
+
+The user option @code{wsp-state-directory} is wa-archive's state directory@comma{} which holds its heartbeat and the markers it leaves when unlinked or rejected as outdated (@ref{The daemon's health, , The daemon's health}).  Its default is @samp{wa-archive} under @samp{$XDG_STATE_HOME}@comma{} or under @samp{~/.local/state}.
+
+The user option @code{wsp-api-socket} is the path of wa-archive's API socket.  The default@comma{} @code{nil}@comma{} means @samp{api.sock} in @code{wsp-data-directory}.  Change these only if wa-archive runs with other directories.
+
+@node Connection and refresh
+@section Connection and refresh
+
+@vindex wsp-api-timeout
+@vindex wsp-refresh-interval
+@vindex wsp-heartbeat-max-age
+The user option @code{wsp-api-timeout} is how many seconds @samp{wsp} waits for the daemon to answer a request; the default is @samp{30}.  A request left unanswered is treated as having an unknown outcome@comma{} never as failed (@ref{What happens when you send, , What happens when you send}).  Downloads wait up to 130 seconds regardless.
+
+The user option @code{wsp-refresh-interval} is how many seconds pass between checks for changes the daemon did not announce@comma{} such as a finished download@comma{} a change in the daemon's health@comma{} or messages stored while @samp{wsp} was disconnected.  The default is @samp{3}.  New messages do not wait for it: the daemon announces them and they appear at once.
+
+The user option @code{wsp-heartbeat-max-age} is the age in seconds after which wa-archive's heartbeat counts as stale; the default is @samp{3600}@comma{} the daemon's own monitoring threshold.
+
+@node Chat display
+@section Chat display
+
+@vindex wsp-history-page-size
+@vindex wsp-message-grouping-interval
+@vindex wsp-prompt
+The user option @code{wsp-history-page-size} is how many messages a chat buffer first shows@comma{} and how many more each @samp{C-c C-l} adds; the default is @samp{200}.
+
+The user option @code{wsp-message-grouping-interval} is how many seconds may pass between a sender's messages for them to share one header; the default is @samp{300}.  A new day always starts a new header.
+
+The user option @code{wsp-prompt} is the string before the input area; the default is @samp{"> "}.
+
+@node Attachments (1)
+@section Attachments
+
+@vindex wsp-inline-images
+@vindex wsp-image-max-width
+@vindex wsp-auto-fetch-images
+@vindex wsp-audio-players
+The user option @code{wsp-inline-images}@comma{} @code{t} by default@comma{} shows downloaded images in the chat; @code{wsp-image-max-width} (default @samp{320}) caps their width in pixels.
+
+The user option @code{wsp-auto-fetch-images}@comma{} @code{t} by default@comma{} has wa-archive download the images of a chat when the chat is drawn@comma{} as the phone does on Wi-Fi.  Each image is requested once per Emacs session.  Set it to @code{nil} to download images only when you press @samp{RET} on them.
+
+The user option @code{wsp-audio-players} lists the programs tried@comma{} in order@comma{} to play voice notes and audio; the first found in the variable @code{exec-path} is used.  The default is @samp{("afplay" "mpv" "ffplay")}.
+
+@node Read receipts typing and online status
+@section Read receipts@comma{} typing and online status
+
+@vindex wsp-mark-read
+@vindex wsp-send-typing
+@vindex wsp-send-presence
+These options decide what your contacts see of your use of @samp{wsp}.
+
+The user option @code{wsp-mark-read}@comma{} @code{t} by default@comma{} makes showing a chat mark its messages read@comma{} which sends read receipts: senders see blue ticks@comma{} as when you open the chat on the phone.  A chat counts as shown when its buffer is in the selected window of a frame that has focus; a terminal frame whose focus Emacs cannot tell never counts (@ref{Read state notifications and the indicator, , Read state@comma{} notifications and the indicator}).  Whether WhatsApp passes the receipts on also depends on your account's privacy setting.
+
+The user option @code{wsp-send-typing}@comma{} @code{nil} by default@comma{} tells the chat when you are typing in its input area.
+
+The user option @code{wsp-send-presence}@comma{} @code{nil} by default@comma{} shows you as online while Emacs has focus and a @samp{wsp} buffer is selected@comma{} and offline otherwise and when Emacs exits.  With both left off@comma{} @samp{wsp} sends no typing or presence at all.
+
+@node Notifications and drafts
+@section Notifications and drafts
+
+@vindex wsp-notify
+@vindex wsp-notify-show-text
+@vindex wsp-drafts-file
+@vindex wsp-reaction-choices
+The user option @code{wsp-notify}@comma{} @code{t} by default@comma{} shows a desktop notification for incoming messages while @samp{wsp} runs.  The user option @code{wsp-notify-show-text}@comma{} @code{t} by default@comma{} puts the message text in the notification; set it to @code{nil} to show only who wrote.
+
+The user option @code{wsp-drafts-file} is where input you have not sent is kept when you kill a chat buffer or exit Emacs@comma{} so it comes back when you open the chat again.  The default is @samp{wsp-drafts.eld} in your Emacs directory.  The file holds message text@comma{} so it is created readable only by you.  If the file cannot be read@comma{} @samp{wsp} leaves it alone rather than overwrite the other chats' drafts@comma{} and says so.
+
+The user option @code{wsp-reaction-choices} lists the reactions @code{wsp-chat-react} offers first; you can also type any emoji.
+
+@node Faces
+@chapter Faces
+
+@vindex wsp-header-face
+@vindex wsp-own-header-face
+@vindex wsp-timestamp-face
+@vindex wsp-quote-face
+@vindex wsp-deleted-face
+@vindex wsp-annotation-face
+@vindex wsp-read-face
+@vindex wsp-media-face
+@vindex wsp-system-face
+@vindex wsp-reaction-face
+@vindex wsp-pending-face
+@vindex wsp-error-face
+@vindex wsp-target-face
+@vindex wsp-prompt-face
+@vindex wsp-list-unread-face
+@vindex wsp-list-count-face
+In chat buffers@comma{} @code{wsp-header-face} and @code{wsp-own-header-face} show the headers above other people's messages and yours@comma{} and @code{wsp-timestamp-face} their times.  @code{wsp-quote-face} shows the quoted message of a reply and voice transcripts@comma{} @code{wsp-deleted-face} deleted messages@comma{} @code{wsp-annotation-face} marks such as @samp{(edited)} and the grey ticks@comma{} @code{wsp-read-face} the ticks of a message the recipient read@comma{} @code{wsp-media-face} attachment labels@comma{} @code{wsp-system-face} WhatsApp records that are not messages@comma{} and @code{wsp-reaction-face} reactions.  @code{wsp-pending-face} shows a message being sent and @code{wsp-error-face} one that may have been sent.  @code{wsp-target-face} highlights the message @code{wsp-open-message} opened at until your next command@comma{} and @code{wsp-prompt-face} is the prompt's face.
+
+In the chat list@comma{} @code{wsp-list-unread-face} shows the names of chats with unread messages and @code{wsp-list-count-face} the unread counts; the latter also colours the mode-line indicator.
+
+@node Variables and keymaps
+@chapter Variables and keymaps
+
+@vindex wsp-chat-mode-map
+@vindex wsp-chat-message-map
+@vindex wsp-list-mode-map
+@vindex wsp-search-mode-map
+@vindex wsp-chat-key
+@vindex wsp-health-warning
+@vindex wsp-api-event-functions
+@vindex wsp-api-status-functions
+@code{wsp-chat-mode-map} is active everywhere in a chat buffer; @code{wsp-chat-message-map} only on messages in the history@comma{} so its single-letter keys do not get in the way of typing.  @code{wsp-list-mode-map} and @code{wsp-search-mode-map} are the keymaps of the chat list and of search results.
+
+In a chat buffer@comma{} @code{wsp-chat-key} holds the chat's canonical key.  @code{wsp-health-warning} holds the current warning about the daemon@comma{} or @code{nil} (@ref{The daemon's health, , The daemon's health}).
+
+The hooks @code{wsp-api-event-functions} and @code{wsp-api-status-functions} run@comma{} respectively@comma{} with each event plist the daemon pushes and with no argument whenever the connection to it opens or closes.  @samp{wsp} uses them to redraw; you can add functions to react to events yourself.
+
+@node Commands
+@chapter Commands
+
+@menu
+* The chat list::
+* Reading a chat::
+* Sending and acting on messages::
+* Attachments::
+* Searching::
+* Opening a chat at a message::
+* Read state@comma{} notifications and the indicator: Read state notifications and the indicator. 
+* The daemon's health::
+@end menu
+
+@node The chat list
+@section The chat list
+
+@findex wsp
+@findex wsp-list-mode
+@findex wsp-list-open
+@samp{M-x wsp} opens the chat list@comma{} the buffer @samp{*wsp*} in @code{wsp-list-mode}@comma{} and connects to wa-archive if needed.  It lists every chat that has messages@comma{} most recent first@comma{} with the number of unread messages@comma{} the time of the latest message and a preview of it; in a group the preview names the sender.  A chat's name is the one wa-archive has for it; an unnamed direct chat takes the contact's latest display name@comma{} else the phone number.
+
+@samp{RET} (@code{wsp-list-open}) opens the chat on the line@comma{} @samp{c} runs @code{wsp-chat}@comma{} @samp{s} runs @code{wsp-search} and @samp{g} redraws the list.  The list redraws itself as messages arrive.  When wa-archive is unlinked@comma{} outdated or silent@comma{} the header line says so instead of showing the column titles.
+
+@findex wsp-chat
+@samp{M-x wsp-chat} opens a chat chosen by name@comma{} including chats with no messages yet.  Names shared by several chats are told apart by number.  Typing a number with a leading @samp{+} that matches no name opens a chat with that number.
+
+@findex wsp-stop
+@samp{M-x wsp-stop} disconnects from wa-archive and stops redrawing; buffers stay but no longer change.  @samp{wsp} also stops by itself when you kill its last buffer.
+
+@node Reading a chat
+@section Reading a chat
+
+@findex wsp-chat-mode
+@findex wsp-chat-load-more
+@findex wsp-chat-next-message
+@findex wsp-chat-previous-message
+A chat buffer@comma{} named @samp{*wsp: NAME*} and in @code{wsp-chat-mode}@comma{} has the history above and the prompt and input area below.  The history is read-only and drawn from the store; it redraws when the chat changes@comma{} keeping your input@comma{} its undo history@comma{} point and the start of every window showing it on the same message.
+
+Messages are grouped under a header naming the sender and time.  Each shows the message it replies to (@samp{┃ Name: text})@comma{} its text with @samp{(edited)} if edited@comma{} @samp{[deleted]} if deleted@comma{} its attachment (@ref{Attachments, , Attachments}) and its reactions grouped by emoji.  Your own messages end in @samp{✓} once sent@comma{} grey @samp{✓✓} once delivered and coloured @samp{✓✓} once read.  WhatsApp records that are not messages@comma{} such as @samp{[messageHistoryNotice]}@comma{} are dimmed.
+
+The buffer first shows the newest @code{wsp-history-page-size} messages.  @samp{C-c C-l} (@code{wsp-chat-load-more})@comma{} or @samp{g} on a message@comma{} adds as many older ones@comma{} back to the start of the archive.  Loaded history stays loaded as new messages arrive.  On messages@comma{} @samp{n} and @samp{p} move to the next and previous message.
+
+The header line shows the chat's name@comma{} whether it is a group@comma{} the reply in progress (whom and what you are replying to) or the edit in progress@comma{} and any problem with the connection or the daemon.
+
+@node Sending and acting on messages
+@section Sending and acting on messages
+
+@findex wsp-chat-return
+@findex wsp-chat-send-input
+@findex wsp-chat-cancel
+Type in the input area and press @samp{RET} (@code{wsp-chat-return}) to send; @samp{S-RET} or @samp{C-j} inserts a newline.  On the history@comma{} @samp{RET} opens what is at point instead (@ref{Attachments, , Attachments}).  @code{wsp-chat-send-input} sends the input as a reply or an edit when one is in progress; @samp{C-c C-k} (@code{wsp-chat-cancel}) cancels that.
+
+@findex wsp-chat-reply
+@findex wsp-chat-edit
+@findex wsp-chat-delete
+@findex wsp-chat-react
+@findex wsp-chat-copy
+On a message:
+
+@itemize
+@item
+@samp{r} (@code{wsp-chat-reply}) makes the next message a reply to it;
+@item
+@samp{e} (@code{wsp-chat-edit}) puts one of your messages in the input to edit it@comma{} after asking if the input holds something else; sending replaces it for everyone (WhatsApp allows edits for about 20 minutes@comma{} and not of attachments);
+@item
+@samp{d} (@code{wsp-chat-delete}) deletes one of your messages for everyone@comma{} after asking;
+@item
+@samp{+} (@code{wsp-chat-react}) reacts with an emoji; an empty answer removes your reaction;
+@item
+@samp{w} (@code{wsp-chat-copy}) copies its text.
+@end itemize
+
+@findex wsp-chat-attach-file
+@samp{C-c C-a} (@code{wsp-chat-attach-file}) sends a file@comma{} with an optional caption; wa-archive sends images as photos and anything else as a document.  If a reply is in progress@comma{} the file is the reply.
+
+@menu
+* What happens when you send::
+@end menu
+
+@node What happens when you send
+@subsection What happens when you send
+
+@findex wsp-chat-dismiss-pending
+Every action (sending@comma{} editing@comma{} deleting@comma{} reacting) goes to wa-archive with an operation id@comma{} and has one of three outcomes:
+
+@itemize
+@item
+@strong{Done}: the daemon sent it and stored it@comma{} and it appears in the history.  Until then it shows below the history as @samp{sending…}.
+@item
+@strong{Failed}: nothing went out.  The text returns to the input if the input is empty@comma{} and the echo area says why.
+@item
+@strong{Uncertain}: the answer was lost@comma{} so it may have gone out.  @samp{wsp} asks the daemon what became of the operation@comma{} again whenever the connection comes back and whenever the store changes@comma{} and settles it as done or failed once the daemon knows.  An answer that arrives late settles it too.  Until then the text stays below the history marked @samp{may have been sent}; once you have checked your phone@comma{} press @samp{x} on it (@code{wsp-chat-dismiss-pending}).  @samp{wsp} never sends anything again on its own@comma{} since a send whose answer was lost may well have arrived.  Killing the buffer forgets such sends@comma{} and the echo area says how many.
+@end itemize
+
+A failed message or edit goes back to the input together with what it replied to or edited@comma{} so @samp{RET} retries it as it was.  Sending a file waits up to ten minutes for the upload before its outcome counts as unknown.
+
+If wa-archive cannot be reached@comma{} the action is refused at once and nothing is pending.
+
+@node Attachments
+@section Attachments
+
+@findex wsp-chat-open-at-point
+Attachments show as a label such as @samp{[image: photo.jpg]} or @samp{[voice message]}.  wa-archive downloads voice notes and audio as they arrive@comma{} and transcribes them; the transcript appears under the label.  Other attachments are downloaded on request.
+
+@samp{RET} or @samp{o} on a message (@code{wsp-chat-open-at-point}) opens what is there: a web or mail link in the browser (other links@comma{} such as @samp{file:} ones@comma{} are refused); an image@comma{} video or document with the system's default application; a voice note or audio with the first of @code{wsp-audio-players}@comma{} or stops it if it is playing.  An attachment not yet downloaded is downloaded first.
+
+@vindex wsp-safe-extensions
+Senders name their files@comma{} and the system may run a file rather than show it (a @samp{.terminal} or @samp{.app}@comma{} say).  So only files whose extension is in the user option @code{wsp-safe-extensions} (common images@comma{} video@comma{} audio@comma{} PDF and office documents) open without a question; anything else asks first.  Images appear in the chat once downloaded (@ref{Attachments (1), , Attachments} options).
+
+@node Searching
+@section Searching
+
+@findex wsp-search
+@findex wsp-search-chat
+@findex wsp-search-mode
+@findex wsp-search-goto-result
+@findex wsp-search-next-result
+@findex wsp-search-previous-result
+@samp{M-x wsp-search} searches every chat for messages whose text@comma{} latest edit or file name contains the query@comma{} ignoring case; @samp{C-c C-s} in a chat (@code{wsp-search-chat}) searches only that chat.  Deleted messages are not searched.  Results@comma{} newest first@comma{} appear in @samp{*wsp search*}; @samp{n} and @samp{p} move between them and @samp{RET} (@code{wsp-search-goto-result}) opens the chat at the message.
+
+@node Opening a chat at a message
+@section Opening a chat at a message
+
+@findex wsp-open-message
+@samp{M-x wsp-open-message} opens the chat of a message given its wa-archive reference@comma{} @samp{CHAT_KEY/MSG_ID}@comma{} with point on the message and the message highlighted.  Other programs can record WhatsApp messages by that reference and open them this way.  History is loaded back to the message if needed.  The chat key may be an old alias of the chat@comma{} and if the message has since moved to another chat key@comma{} @samp{wsp} finds it by its id.  A deleted message is still found and shows as @samp{[deleted]}.  If the message is not in the store but its chat is@comma{} the chat opens and the echo area says why; if neither is known@comma{} the command signals an error.  Opening a chat this way marks it read@comma{} like any chat you look at.
+
+@node Read state notifications and the indicator
+@section Read state@comma{} notifications and the indicator
+
+A message from someone else is unread until you show its chat in @samp{wsp} (with @code{wsp-mark-read} on) or read it on another device.  Messages archived before wa-archive started keeping read state count as read.  When a chat buffer with unread messages is in the selected window of a focused frame@comma{} @samp{wsp} asks wa-archive to mark them read@comma{} which sends the read receipts.
+
+While @samp{wsp} runs@comma{} each batch of new incoming messages shows one desktop notification per chat@comma{} except for the chat you are looking at.  Only messages that arrived live in the last ten minutes notify@comma{} so history replays and the old messages wa-archive copies when it merges two ids of a chat do not.  If the daemon cannot mark some messages read (for instance in a group you have left)@comma{} @samp{wsp} does not ask again until the chat's unread count changes.  On macOS notifications go through @samp{osascript}@comma{} elsewhere through @samp{notifications.el}.
+
+@findex wsp-indicator-mode
+@code{wsp-indicator-mode} is a global minor mode that shows the number of unread messages in the mode line@comma{} as @samp{WA:3}.  It updates while @samp{wsp} runs.
+
+@node The daemon's health
+@section The daemon's health
+
+wa-archive writes a heartbeat file while connected and leaves a marker when WhatsApp unlinks it or rejects it as outdated.  @samp{wsp} reads these and@comma{} when something is wrong@comma{} shows a warning in the header line of the list and of chat buffers: unlinked@comma{} outdated@comma{} no heartbeat@comma{} or a heartbeat older than @code{wsp-heartbeat-max-age}.  Then recent messages may be missing.  A chat buffer also says when @samp{wsp} is not connected to the daemon@comma{} in which case it can read but not act.
+
+@node Functions
+@chapter Functions
+
+@menu
+* Opening a message from another package::
+* Building blocks::
+@end menu
+
+@node Opening a message from another package
+@section Opening a message from another package
+
+@findex wsp-message-buffer
+@code{wsp-message-buffer} takes a reference @samp{CHAT_KEY/MSG_ID} and returns the chat buffer with point on the message@comma{} without changing any window.  It is for programs that show the message in a window of their own choosing@comma{} such as a split view next to a list of messages.  When the message is not in the store it signals @code{wsp-message-not-found}@comma{} a kind of @code{user-error}@comma{} whose data is @samp{(REASON CHAT-BUFFER)}: CHAT-BUFFER is the chat's buffer when the chat is known@comma{} else @code{nil}.
+
+@lisp
+(condition-case err
+    (set-window-buffer window (wsp-message-buffer ref))
+  (wsp-message-not-found
+   (when-let* ((chat (nth 2 err)))
+     (set-window-buffer window chat))
+   (message "%s" (nth 1 err))))
+@end lisp
+
+@node Building blocks
+@section Building blocks
+
+@findex wsp-start
+@findex wsp-chat-buffer
+@findex wsp-chat-open
+@findex wsp-chat-show-message
+@findex wsp-api-request
+@findex wsp-db-chats
+@findex wsp-db-messages
+@findex wsp-db-message
+@code{wsp-start} connects to wa-archive and starts redrawing; every command calls it.  @code{wsp-chat-buffer} returns a chat's buffer@comma{} creating it if needed@comma{} and @code{wsp-chat-open} also displays it; both take a chat key or an alias of one.  In a chat buffer@comma{} @code{wsp-chat-show-message} loads history back to a message id and puts point on it.
+
+@code{wsp-api-request} sends a request to the daemon and calls a callback with its result and error; the methods are those of wa-archive's API@comma{} described in @samp{docs/api.md} in the repository.  @code{wsp-db-chats}@comma{} @code{wsp-db-messages} and @code{wsp-db-message} read chats and messages from the store as plists.
+
+@node Indices
+@chapter Indices
+
+@menu
+* Function index::
+* Variable index::
+@end menu
+
+@node Function index
+@section Function index
+
+@printindex fn
+
+@node Variable index
+@section Variable index
+
+@printindex vr
+
+@bye

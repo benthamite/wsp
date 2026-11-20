@@ -1,0 +1,359 @@
+#+title: wsp: WhatsApp client for Emacs
+#+author: Pablo Stafforini
+#+email: pablo@stafforini.com
+#+language: en
+#+options: ':t toc:t author:t email:t num:t
+#+startup: content
+#+export_file_name: wsp.texi
+#+texinfo_filename: wsp.info
+#+texinfo_dir_category: Emacs misc features
+#+texinfo_dir_title: wsp: (wsp)
+#+texinfo_dir_desc: WhatsApp client for Emacs on wa-archive
+
+This manual describes the features and customization options for =wsp=.
+
+* Overview
+:PROPERTIES:
+:CUSTOM_ID: h:overview
+:END:
+
+=wsp= is a WhatsApp client for Emacs: you read your chats, reply, react, edit, delete, send files, search and get notified, as on the phone.
+
+=wsp= has no WhatsApp connection of its own.  [[https://github.com/benthamite/wa-archive][wa-archive]], a daemon built on the whatsmeow library and linked to your phone as a companion device, holds the connection and keeps every message in an SQLite store.  =wsp= reads that store directly, read-only, and does everything that acts on WhatsApp through wa-archive's local API, a Unix socket.  This is the arrangement sgn has with signal-cli: the daemon is the backend and =wsp= the client.  Because the store holds the whole history, a chat shows as much of it as you load, and any message can be opened by its id, which lets other programs link to a message.
+
+The parts:
+
+- reading: the chat list ([[#h:chat-list][The chat list]]), chat buffers ([[#h:reading-a-chat][Reading a chat]]) and attachments ([[#h:attachments][Attachments]]);
+- writing: sending, replying, editing, deleting and reacting ([[#h:sending-and-acting][Sending and acting on messages]]);
+- finding: search ([[#h:searching][Searching]]) and opening a chat at a given message ([[#h:opening-at-a-message][Opening a chat at a message]]);
+- staying current: read state, notifications and the unread indicator ([[#h:read-state-and-notifications][Read state, notifications and the indicator]]).
+
+*Prerequisites*: Emacs 31.1 or later with SQLite support (=wsp= opens the store with ~sqlite-open~'s read-only argument, new in 31.1), and [[https://github.com/benthamite/wa-archive][wa-archive]] running and linked to your phone (its README explains how).  Without the daemon's socket, =wsp= still shows the store but cannot act.
+
+* User options
+:PROPERTIES:
+:CUSTOM_ID: h:user-options
+:END:
+
+** Where wa-archive keeps its files
+:PROPERTIES:
+:CUSTOM_ID: h:paths
+:END:
+
+#+vindex: wsp-data-directory
+#+vindex: wsp-state-directory
+#+vindex: wsp-api-socket
+The user option ~wsp-data-directory~ is wa-archive's data directory, which holds the store =messages.db=, the downloaded attachments under =media/= and the API socket.  Its default is =wa-archive= under =$XDG_DATA_HOME=, or under =~/.local/share= when that variable is unset, which is where wa-archive puts it.
+
+The user option ~wsp-state-directory~ is wa-archive's state directory, which holds its heartbeat and the markers it leaves when unlinked or rejected as outdated ([[#h:health][The daemon's health]]).  Its default is =wa-archive= under =$XDG_STATE_HOME=, or under =~/.local/state=.
+
+The user option ~wsp-api-socket~ is the path of wa-archive's API socket.  The default, ~nil~, means =api.sock= in ~wsp-data-directory~.  Change these only if wa-archive runs with other directories.
+
+** Connection and refresh
+:PROPERTIES:
+:CUSTOM_ID: h:connection-options
+:END:
+
+#+vindex: wsp-api-timeout
+#+vindex: wsp-refresh-interval
+#+vindex: wsp-heartbeat-max-age
+The user option ~wsp-api-timeout~ is how many seconds =wsp= waits for the daemon to answer a request; the default is =30=.  A request left unanswered is treated as having an unknown outcome, never as failed ([[#h:send-outcomes][What happens when you send]]).  Downloads wait up to 130 seconds regardless.
+
+The user option ~wsp-refresh-interval~ is how many seconds pass between checks for changes the daemon did not announce, such as a finished download, a change in the daemon's health, or messages stored while =wsp= was disconnected.  The default is =3=.  New messages do not wait for it: the daemon announces them and they appear at once.
+
+The user option ~wsp-heartbeat-max-age~ is the age in seconds after which wa-archive's heartbeat counts as stale; the default is =3600=, the daemon's own monitoring threshold.
+
+** Chat display
+:PROPERTIES:
+:CUSTOM_ID: h:display-options
+:END:
+
+#+vindex: wsp-history-page-size
+#+vindex: wsp-message-grouping-interval
+#+vindex: wsp-prompt
+The user option ~wsp-history-page-size~ is how many messages a chat buffer first shows, and how many more each =C-c C-l= adds; the default is =200=.
+
+The user option ~wsp-message-grouping-interval~ is how many seconds may pass between a sender's messages for them to share one header; the default is =300=.  A new day always starts a new header.
+
+The user option ~wsp-prompt~ is the string before the input area; the default is ="> "=.
+
+** Attachments
+:PROPERTIES:
+:CUSTOM_ID: h:attachment-options
+:END:
+
+#+vindex: wsp-inline-images
+#+vindex: wsp-image-max-width
+#+vindex: wsp-auto-fetch-images
+#+vindex: wsp-audio-players
+The user option ~wsp-inline-images~, ~t~ by default, shows downloaded images in the chat; ~wsp-image-max-width~ (default =320=) caps their width in pixels.
+
+The user option ~wsp-auto-fetch-images~, ~t~ by default, has wa-archive download the images of a chat when the chat is drawn, as the phone does on Wi-Fi.  Each image is requested once per Emacs session.  Set it to ~nil~ to download images only when you press =RET= on them.
+
+The user option ~wsp-audio-players~ lists the programs tried, in order, to play voice notes and audio; the first found in the variable ~exec-path~ is used.  The default is =("afplay" "mpv" "ffplay")=.
+
+** Read receipts, typing and online status
+:PROPERTIES:
+:CUSTOM_ID: h:privacy-options
+:END:
+
+#+vindex: wsp-mark-read
+#+vindex: wsp-send-typing
+#+vindex: wsp-send-presence
+These options decide what your contacts see of your use of =wsp=.
+
+The user option ~wsp-mark-read~, ~t~ by default, makes showing a chat mark its messages read, which sends read receipts: senders see blue ticks, as when you open the chat on the phone.  A chat counts as shown when its buffer is in the selected window of a frame that has focus; a terminal frame whose focus Emacs cannot tell never counts ([[#h:read-state-and-notifications][Read state, notifications and the indicator]]).  Whether WhatsApp passes the receipts on also depends on your account's privacy setting.
+
+The user option ~wsp-send-typing~, ~nil~ by default, tells the chat when you are typing in its input area.
+
+The user option ~wsp-send-presence~, ~nil~ by default, shows you as online while Emacs has focus and a =wsp= buffer is selected, and offline otherwise and when Emacs exits.  With both left off, =wsp= sends no typing or presence at all.
+
+** Notifications and drafts
+:PROPERTIES:
+:CUSTOM_ID: h:notification-options
+:END:
+
+#+vindex: wsp-notify
+#+vindex: wsp-notify-show-text
+#+vindex: wsp-drafts-file
+#+vindex: wsp-reaction-choices
+The user option ~wsp-notify~, ~t~ by default, shows a desktop notification for incoming messages while =wsp= runs.  The user option ~wsp-notify-show-text~, ~t~ by default, puts the message text in the notification; set it to ~nil~ to show only who wrote.
+
+The user option ~wsp-drafts-file~ is where input you have not sent is kept when you kill a chat buffer or exit Emacs, so it comes back when you open the chat again.  The default is =wsp-drafts.eld= in your Emacs directory.  The file holds message text, so it is created readable only by you.  If the file cannot be read, =wsp= leaves it alone rather than overwrite the other chats' drafts, and says so.
+
+The user option ~wsp-reaction-choices~ lists the reactions ~wsp-chat-react~ offers first; you can also type any emoji.
+
+* Faces
+:PROPERTIES:
+:CUSTOM_ID: h:faces
+:END:
+
+#+vindex: wsp-header-face
+#+vindex: wsp-own-header-face
+#+vindex: wsp-timestamp-face
+#+vindex: wsp-quote-face
+#+vindex: wsp-deleted-face
+#+vindex: wsp-annotation-face
+#+vindex: wsp-read-face
+#+vindex: wsp-media-face
+#+vindex: wsp-system-face
+#+vindex: wsp-reaction-face
+#+vindex: wsp-pending-face
+#+vindex: wsp-error-face
+#+vindex: wsp-target-face
+#+vindex: wsp-prompt-face
+#+vindex: wsp-list-unread-face
+#+vindex: wsp-list-count-face
+In chat buffers, ~wsp-header-face~ and ~wsp-own-header-face~ show the headers above other people's messages and yours, and ~wsp-timestamp-face~ their times.  ~wsp-quote-face~ shows the quoted message of a reply and voice transcripts, ~wsp-deleted-face~ deleted messages, ~wsp-annotation-face~ marks such as =(edited)= and the grey ticks, ~wsp-read-face~ the ticks of a message the recipient read, ~wsp-media-face~ attachment labels, ~wsp-system-face~ WhatsApp records that are not messages, and ~wsp-reaction-face~ reactions.  ~wsp-pending-face~ shows a message being sent and ~wsp-error-face~ one that may have been sent.  ~wsp-target-face~ highlights the message ~wsp-open-message~ opened at until your next command, and ~wsp-prompt-face~ is the prompt's face.
+
+In the chat list, ~wsp-list-unread-face~ shows the names of chats with unread messages and ~wsp-list-count-face~ the unread counts; the latter also colours the mode-line indicator.
+
+* Variables and keymaps
+:PROPERTIES:
+:CUSTOM_ID: h:variables-and-keymaps
+:END:
+
+#+vindex: wsp-chat-mode-map
+#+vindex: wsp-chat-message-map
+#+vindex: wsp-list-mode-map
+#+vindex: wsp-search-mode-map
+#+vindex: wsp-chat-key
+#+vindex: wsp-health-warning
+#+vindex: wsp-api-event-functions
+#+vindex: wsp-api-status-functions
+~wsp-chat-mode-map~ is active everywhere in a chat buffer; ~wsp-chat-message-map~ only on messages in the history, so its single-letter keys do not get in the way of typing.  ~wsp-list-mode-map~ and ~wsp-search-mode-map~ are the keymaps of the chat list and of search results.
+
+In a chat buffer, ~wsp-chat-key~ holds the chat's canonical key.  ~wsp-health-warning~ holds the current warning about the daemon, or ~nil~ ([[#h:health][The daemon's health]]).
+
+The hooks ~wsp-api-event-functions~ and ~wsp-api-status-functions~ run, respectively, with each event plist the daemon pushes and with no argument whenever the connection to it opens or closes.  =wsp= uses them to redraw; you can add functions to react to events yourself.
+
+* Commands
+:PROPERTIES:
+:CUSTOM_ID: h:commands
+:END:
+
+** The chat list
+:PROPERTIES:
+:CUSTOM_ID: h:chat-list
+:END:
+
+#+findex: wsp
+#+findex: wsp-list-mode
+#+findex: wsp-list-open
+=M-x wsp= opens the chat list, the buffer =*wsp*= in ~wsp-list-mode~, and connects to wa-archive if needed.  It lists every chat that has messages, most recent first, with the number of unread messages, the time of the latest message and a preview of it; in a group the preview names the sender.  A chat's name is the one wa-archive has for it; an unnamed direct chat takes the contact's latest display name, else the phone number.
+
+=RET= (~wsp-list-open~) opens the chat on the line, =c= runs ~wsp-chat~, =s= runs ~wsp-search~ and =g= redraws the list.  The list redraws itself as messages arrive.  When wa-archive is unlinked, outdated or silent, the header line says so instead of showing the column titles.
+
+#+findex: wsp-chat
+=M-x wsp-chat= opens a chat chosen by name, including chats with no messages yet.  Names shared by several chats are told apart by number.  Typing a number with a leading =+= that matches no name opens a chat with that number.
+
+#+findex: wsp-stop
+=M-x wsp-stop= disconnects from wa-archive and stops redrawing; buffers stay but no longer change.  =wsp= also stops by itself when you kill its last buffer.
+
+** Reading a chat
+:PROPERTIES:
+:CUSTOM_ID: h:reading-a-chat
+:END:
+
+#+findex: wsp-chat-mode
+#+findex: wsp-chat-load-more
+#+findex: wsp-chat-next-message
+#+findex: wsp-chat-previous-message
+A chat buffer, named =*wsp: NAME*= and in ~wsp-chat-mode~, has the history above and the prompt and input area below.  The history is read-only and drawn from the store; it redraws when the chat changes, keeping your input, its undo history, point and the start of every window showing it on the same message.
+
+Messages are grouped under a header naming the sender and time.  Each shows the message it replies to (=┃ Name: text=), its text with =(edited)= if edited, =[deleted]= if deleted, its attachment ([[#h:attachments][Attachments]]) and its reactions grouped by emoji.  Your own messages end in =✓= once sent, grey =✓✓= once delivered and coloured =✓✓= once read.  WhatsApp records that are not messages, such as =[messageHistoryNotice]=, are dimmed.
+
+The buffer first shows the newest ~wsp-history-page-size~ messages.  =C-c C-l= (~wsp-chat-load-more~), or =g= on a message, adds as many older ones, back to the start of the archive.  Loaded history stays loaded as new messages arrive.  On messages, =n= and =p= move to the next and previous message.
+
+The header line shows the chat's name, whether it is a group, the reply in progress (whom and what you are replying to) or the edit in progress, and any problem with the connection or the daemon.
+
+** Sending and acting on messages
+:PROPERTIES:
+:CUSTOM_ID: h:sending-and-acting
+:END:
+
+#+findex: wsp-chat-return
+#+findex: wsp-chat-send-input
+#+findex: wsp-chat-cancel
+Type in the input area and press =RET= (~wsp-chat-return~) to send; =S-RET= or =C-j= inserts a newline.  On the history, =RET= opens what is at point instead ([[#h:attachments][Attachments]]).  ~wsp-chat-send-input~ sends the input as a reply or an edit when one is in progress; =C-c C-k= (~wsp-chat-cancel~) cancels that.
+
+#+findex: wsp-chat-reply
+#+findex: wsp-chat-edit
+#+findex: wsp-chat-delete
+#+findex: wsp-chat-react
+#+findex: wsp-chat-copy
+On a message:
+
+- =r= (~wsp-chat-reply~) makes the next message a reply to it;
+- =e= (~wsp-chat-edit~) puts one of your messages in the input to edit it, after asking if the input holds something else; sending replaces it for everyone (WhatsApp allows edits for about 20 minutes, and not of attachments);
+- =d= (~wsp-chat-delete~) deletes one of your messages for everyone, after asking;
+- =+= (~wsp-chat-react~) reacts with an emoji; an empty answer removes your reaction;
+- =w= (~wsp-chat-copy~) copies its text.
+
+#+findex: wsp-chat-attach-file
+=C-c C-a= (~wsp-chat-attach-file~) sends a file, with an optional caption; wa-archive sends images as photos and anything else as a document.  If a reply is in progress, the file is the reply.
+
+*** What happens when you send
+:PROPERTIES:
+:CUSTOM_ID: h:send-outcomes
+:END:
+
+#+findex: wsp-chat-dismiss-pending
+Every action (sending, editing, deleting, reacting) goes to wa-archive with an operation id, and has one of three outcomes:
+
+- *Done*: the daemon sent it and stored it, and it appears in the history.  Until then it shows below the history as =sending…=.
+- *Failed*: nothing went out.  The text returns to the input if the input is empty, and the echo area says why.
+- *Uncertain*: the answer was lost, so it may have gone out.  =wsp= asks the daemon what became of the operation, again whenever the connection comes back and whenever the store changes, and settles it as done or failed once the daemon knows.  An answer that arrives late settles it too.  Until then the text stays below the history marked =may have been sent=; once you have checked your phone, press =x= on it (~wsp-chat-dismiss-pending~).  =wsp= never sends anything again on its own, since a send whose answer was lost may well have arrived.  Killing the buffer forgets such sends, and the echo area says how many.
+
+A failed message or edit goes back to the input together with what it replied to or edited, so =RET= retries it as it was.  Sending a file waits up to ten minutes for the upload before its outcome counts as unknown.
+
+If wa-archive cannot be reached, the action is refused at once and nothing is pending.
+
+** Attachments
+:PROPERTIES:
+:CUSTOM_ID: h:attachments
+:END:
+
+#+findex: wsp-chat-open-at-point
+Attachments show as a label such as =[image: photo.jpg]= or =[voice message]=.  wa-archive downloads voice notes and audio as they arrive, and transcribes them; the transcript appears under the label.  Other attachments are downloaded on request.
+
+=RET= or =o= on a message (~wsp-chat-open-at-point~) opens what is there: a web or mail link in the browser (other links, such as =file:= ones, are refused); an image, video or document with the system's default application; a voice note or audio with the first of ~wsp-audio-players~, or stops it if it is playing.  An attachment not yet downloaded is downloaded first.
+
+#+vindex: wsp-safe-extensions
+Senders name their files, and the system may run a file rather than show it (a =.terminal= or =.app=, say).  So only files whose extension is in the user option ~wsp-safe-extensions~ (common images, video, audio, PDF and office documents) open without a question; anything else asks first.  Images appear in the chat once downloaded ([[#h:attachment-options][Attachments]] options).
+
+** Searching
+:PROPERTIES:
+:CUSTOM_ID: h:searching
+:END:
+
+#+findex: wsp-search
+#+findex: wsp-search-chat
+#+findex: wsp-search-mode
+#+findex: wsp-search-goto-result
+#+findex: wsp-search-next-result
+#+findex: wsp-search-previous-result
+=M-x wsp-search= searches every chat for messages whose text, latest edit or file name contains the query, ignoring case; =C-c C-s= in a chat (~wsp-search-chat~) searches only that chat.  Deleted messages are not searched.  Results, newest first, appear in =*wsp search*=; =n= and =p= move between them and =RET= (~wsp-search-goto-result~) opens the chat at the message.
+
+** Opening a chat at a message
+:PROPERTIES:
+:CUSTOM_ID: h:opening-at-a-message
+:END:
+
+#+findex: wsp-open-message
+=M-x wsp-open-message= opens the chat of a message given its wa-archive reference, =CHAT_KEY/MSG_ID=, with point on the message and the message highlighted.  Other programs can record WhatsApp messages by that reference and open them this way.  History is loaded back to the message if needed.  The chat key may be an old alias of the chat, and if the message has since moved to another chat key, =wsp= finds it by its id.  A deleted message is still found and shows as =[deleted]=.  If the message is not in the store but its chat is, the chat opens and the echo area says why; if neither is known, the command signals an error.  Opening a chat this way marks it read, like any chat you look at.
+
+** Read state, notifications and the indicator
+:PROPERTIES:
+:CUSTOM_ID: h:read-state-and-notifications
+:END:
+
+A message from someone else is unread until you show its chat in =wsp= (with ~wsp-mark-read~ on) or read it on another device.  Messages archived before wa-archive started keeping read state count as read.  When a chat buffer with unread messages is in the selected window of a focused frame, =wsp= asks wa-archive to mark them read, which sends the read receipts.
+
+While =wsp= runs, each batch of new incoming messages shows one desktop notification per chat, except for the chat you are looking at.  Only messages that arrived live in the last ten minutes notify, so history replays and the old messages wa-archive copies when it merges two ids of a chat do not.  If the daemon cannot mark some messages read (for instance in a group you have left), =wsp= does not ask again until the chat's unread count changes.  On macOS notifications go through =osascript=, elsewhere through =notifications.el=.
+
+#+findex: wsp-indicator-mode
+~wsp-indicator-mode~ is a global minor mode that shows the number of unread messages in the mode line, as =WA:3=.  It updates while =wsp= runs.
+
+** The daemon's health
+:PROPERTIES:
+:CUSTOM_ID: h:health
+:END:
+
+wa-archive writes a heartbeat file while connected and leaves a marker when WhatsApp unlinks it or rejects it as outdated.  =wsp= reads these and, when something is wrong, shows a warning in the header line of the list and of chat buffers: unlinked, outdated, no heartbeat, or a heartbeat older than ~wsp-heartbeat-max-age~.  Then recent messages may be missing.  A chat buffer also says when =wsp= is not connected to the daemon, in which case it can read but not act.
+
+* Functions
+:PROPERTIES:
+:CUSTOM_ID: h:functions
+:END:
+
+** Opening a message from another package
+:PROPERTIES:
+:CUSTOM_ID: h:message-buffer
+:END:
+
+#+findex: wsp-message-buffer
+~wsp-message-buffer~ takes a reference =CHAT_KEY/MSG_ID= and returns the chat buffer with point on the message, without changing any window.  It is for programs that show the message in a window of their own choosing, such as a split view next to a list of messages.  When the message is not in the store it signals ~wsp-message-not-found~, a kind of ~user-error~, whose data is =(REASON CHAT-BUFFER)=: CHAT-BUFFER is the chat's buffer when the chat is known, else ~nil~.
+
+#+begin_src emacs-lisp
+(condition-case err
+    (set-window-buffer window (wsp-message-buffer ref))
+  (wsp-message-not-found
+   (when-let* ((chat (nth 2 err)))
+     (set-window-buffer window chat))
+   (message "%s" (nth 1 err))))
+#+end_src
+
+** Building blocks
+:PROPERTIES:
+:CUSTOM_ID: h:building-blocks
+:END:
+
+#+findex: wsp-start
+#+findex: wsp-chat-buffer
+#+findex: wsp-chat-open
+#+findex: wsp-chat-show-message
+#+findex: wsp-api-request
+#+findex: wsp-db-chats
+#+findex: wsp-db-messages
+#+findex: wsp-db-message
+~wsp-start~ connects to wa-archive and starts redrawing; every command calls it.  ~wsp-chat-buffer~ returns a chat's buffer, creating it if needed, and ~wsp-chat-open~ also displays it; both take a chat key or an alias of one.  In a chat buffer, ~wsp-chat-show-message~ loads history back to a message id and puts point on it.
+
+~wsp-api-request~ sends a request to the daemon and calls a callback with its result and error; the methods are those of wa-archive's API, described in =docs/api.md= in the repository.  ~wsp-db-chats~, ~wsp-db-messages~ and ~wsp-db-message~ read chats and messages from the store as plists.
+
+* Indices
+:PROPERTIES:
+:CUSTOM_ID: h:indices
+:END:
+
+** Function index
+:PROPERTIES:
+:INDEX: fn
+:CUSTOM_ID: h:function-index
+:END:
+
+** Variable index
+:PROPERTIES:
+:INDEX: vr
+:CUSTOM_ID: h:variable-index
+:END:

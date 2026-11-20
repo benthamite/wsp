@@ -1,0 +1,5 @@
+*.elc
+/logs/
+/docs/plans/
+/AGENTS.md
+/CLAUDE.md
